@@ -33,6 +33,7 @@ To install and use this project, follow these steps:
     ```sh
     git submodule update --init --recursive
     ```
-
 ## Usage
+Remove the .dev folder to reconfigure dev container
+
 
