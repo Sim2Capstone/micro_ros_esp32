@@ -11,6 +11,45 @@
 #include "Wire.h"
 #endif
 
+
+// ================================================================
+// ===              MOTOR CONSTANTS              ===
+// ================================================================
+//Bonus info: Pulse/rotation = 83.5-84
+const int PWM_CHANNEL = 0;
+const int PWM_FREQ = 50000;
+const int PWM_RESOLUTION = 8;
+const float NO_LOAD_SPEED = 7.50f;
+const float STALL_TORQUE = 1.05f;
+
+//Pins
+//Motor 1
+const int encoderPin1 = 15;  //Yellow
+const int PWMPin1 = 5;       //Blue
+const int dirPin1 = 0;       //White
+
+//Motor 2
+const int encoderPin2 = 12;  //Yellow
+const int PWMPin2 = 14;      //Blue
+const int dirPin2 = 27;      //White
+
+
+volatile int pulseCount1 = 0;
+volatile int pulseCount2 = 0;
+
+bool dir = true;
+
+long int lastPulse1 = 0;
+long int lastPulse2 = 0;
+double inSpeed1 = 0;
+double inSpeed2 = 0;
+
+
+//For timed interrupts in loop
+long int pastMillis = 0;
+long int currentMillis = 0;
+const unsigned period = 20;
+
 // ================================================================
 // ===               ROS DEPENDENCIES              ===
 // ================================================================
@@ -23,6 +62,10 @@
 #include <rclc/executor.h>
 #include <std_msgs/msg/int32.h>
 #include <sensor_msgs/msg/imu.h>
+#include <sensor_msgs/msg/joint_state.h>
+#include <std_msgs/msg/int32.h>
+#include <std_msgs/msg/int64.h>
+#include <std_msgs/msg/float32_multi_array.h>
 
 // ================================================================
 // ===              IMU SETUP              ===
@@ -48,6 +91,8 @@ MPU6050 mpu;
 #define INTERRUPT_PIN 2
 #define LED_PIN 13
 bool blinkState = false;
+
+
 
 // ROS CONSTANTS
 #define DELAY_MS 100
@@ -83,7 +128,13 @@ uint8_t teapotPacket[14] = { '$', 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x00, '\r'
 // ================================================================
 
 rcl_publisher_t publisher;
+rcl_publisher_t publisher2;
+rcl_subscription_t test_sub;
+rcl_subscription_t sub_motor_command;
 sensor_msgs__msg__Imu imu_msg;
+//std_msgs__msg__Float32MultiArray msg;
+std_msgs__msg__Int64 msg;
+sensor_msgs__msg__JointState motor_command_msg;
 rclc_executor_t executor;
 rclc_support_t support;
 rcl_allocator_t allocator;  // micro ros
@@ -106,10 +157,10 @@ rcl_timer_t timer;
 
 
 void error_loop() {
-  while (1) {
-    digitalWrite(LED_PIN, !digitalRead(LED_PIN));
-    delay(500);
-  }
+  // while (1) {
+  //   digitalWrite(LED_PIN, !digitalRead(LED_PIN));
+  //   delay(500);
+  // }
 }
 // ================================================================
 // ===               INTERRUPT DETECTION ROUTINE                ===
@@ -120,6 +171,7 @@ void dmpDataReady() {
   mpuInterrupt = true;
 }
 
+int test_val = 69;
 
 void timer_callback(rcl_timer_t *timer, int64_t last_call_time) {
   // not used but kept for debugging purpose
@@ -134,49 +186,43 @@ void timer_callback(rcl_timer_t *timer, int64_t last_call_time) {
     mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
 
     if (timer != NULL) {
-      RCSOFTCHECK(rcl_publish(&publisher, &imu_msg, NULL));
       imu_msg.orientation.x = q.x;
       imu_msg.orientation.y = q.y;
       imu_msg.orientation.z = q.z;
       imu_msg.orientation.w = q.w;
+      RCSOFTCHECK(rcl_publish(&publisher, &imu_msg, NULL));
     }
     // blink LED to indicate activity
-    digitalWrite(LED_PIN, !digitalRead(LED_PIN));
+    //digitalWrite(LED_PIN, !digitalRead(LED_PIN));
   }
 }
 
 
+void subscription_callback(const void *msgin) {
+  Serial.println("Q");
+  //const std_msgs__msg__Float32MultiArray *msg = (const std_msgs__msg__Float32MultiArray *)msgin;
+  const std_msgs__msg__Int64 *msg = (const std_msgs__msg__Int64 *)msgin;
+  Serial.print(msg->data);
+  digitalWrite(LED_PIN, (msg->data == 0)  ? LOW : HIGH);
+}
+
+// Implementation example:s
+void motor_command_callback(const void *msgin) {
+  Serial.println("F");
+  // // Cast received message to used type
+  const sensor_msgs__msg__JointState *msg = (const sensor_msgs__msg__JointState *)msgin;
+  Serial.println(msg->effort.data[0]);
+
+  // test_val = (int)msg->velocity.data[0];
+
+  // apply_torque(msg->velocity.data[0], PWMPin1, dirPin1);
+  // apply_torque(msg->velocity.data[1], PWMPin2, dirPin2);
+}
+
 void setup() {
-
-// ================================================================
-// ===                       ROS SETUP                       ===
-// ================================================================
- set_microros_transports();
-  digitalWrite(LED_PIN, HIGH);
-  delay(2000);
-
-  allocator = rcl_get_default_allocator();
-  RCCHECK(rclc_support_init(&support, 0, NULL, &allocator));
-
-  const char *node_name = "esp_node";
-  const char *node_namespace = "";
-  RCCHECK(rclc_node_init_default(&node, node_name, node_namespace, &support));
-
-  //initialize publisher
-  const char *publisher_topic_name = "imu_data";
-  RCCHECK(rclc_publisher_init_default(&publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, Imu), publisher_topic_name));
-
-
-  // intialize the time to trigger the callback
-  RCCHECK(rclc_timer_init_default(&timer, &support, RCL_MS_TO_NS(TIMER_TIMEOUT_MS), timer_callback));
-
-  //inittial executor and add the timer
-  const unsigned int num_handles = 1;
-  RCCHECK(rclc_executor_init(&executor, &support.context, num_handles, &allocator));
-  RCCHECK(rclc_executor_add_timer(&executor, &timer));
-// ================================================================
-// ===                       IMU SETUP                       ===
-// ================================================================
+  // ================================================================
+  // ===                       IMU SETUP                       ===
+  // ================================================================
 
 // join I2C bus (I2Cdev library doesn't do this automatically)
 #if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
@@ -186,9 +232,7 @@ void setup() {
   Fastwire::setup(400, true);
 #endif
 
-  // initialize serial communication
-  // (115200 chosen because it is required for Teapot Demo output, but it's
-  // really up to you depending on your project)
+
   Serial.begin(115200);
   while (!Serial)
     ;  // wait for Leonardo enumeration, others continue immediately
@@ -203,11 +247,9 @@ void setup() {
   Serial.println(mpu.testConnection() ? F("MPU6050 connection successful") : F("MPU6050 connection failed"));
 
   // wait for ready
-  Serial.println(F("\nSend any character to begin DMP programming and demo: "));
   // while (Serial.available() && Serial.read()); // empty buffer
   // while (!Serial.available());                 // wait for data
-  while (Serial.available() && Serial.read())
-    ;  // empty buffer again
+  // while (Serial.available() && Serial.read()) // empty buffer again
 
   // load and configure the DMP
   Serial.println(F("Initializing DMP..."));
@@ -237,7 +279,7 @@ void setup() {
     mpuIntStatus = mpu.getIntStatus();
 
     // set our DMP Ready flag so the main loop() function knows it's okay to use it
-    Serial.println(F("DMP ready! Waiting for first interrupt..."));
+    // Serial.println(F("DMP ready! Waiting for first interrupt..."));
     dmpReady = true;
 
     // get expected DMP packet size for later comparison
@@ -254,6 +296,78 @@ void setup() {
 
   // configure LED for output
   pinMode(LED_PIN, OUTPUT);
+
+  // ================================================================
+  // ===                       ROS SETUP                       ===
+  // ================================================================
+  //set_microros_transports();
+  set_microros_wifi_transports("IEEEwireless", "iEEE2023?", "192.168.0.131", 8888);
+
+  digitalWrite(LED_PIN, HIGH);
+  delay(200);
+
+  allocator = rcl_get_default_allocator();
+  RCCHECK(rclc_support_init(&support, 0, NULL, &allocator));
+  Serial.println("1");
+
+  const char *node_name = "esp_node";
+  const char *node_namespace = "";
+  RCCHECK(rclc_node_init_default(&node, node_name, node_namespace, &support));
+  Serial.println("2");
+
+  //initialize publisher
+  const char *publisher_topic_name = "imu_data";
+  RCCHECK(rclc_publisher_init_default(&publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, Imu), publisher_topic_name));
+  Serial.println("3");
+
+  RCCHECK(rclc_publisher_init_default(&publisher2, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32), "test"));
+  Serial.println("4");
+
+  //initialize subscriber
+  const char *sub_name = "/motor_command";
+  // Initialize a reliable subscriber
+  RCCHECK(rclc_subscription_init_default(&sub_motor_command, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, JointState), sub_name));
+  Serial.println("5");
+
+  // // create subscriber
+  RCCHECK(rclc_subscription_init_default(
+    &test_sub,
+    &node,
+    ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int64),
+    "micro_ros_arduino_subscriber"));
+    Serial.println("6");
+
+
+  RCCHECK(rclc_timer_init_default(&timer, &support, RCL_MS_TO_NS(TIMER_TIMEOUT_MS), timer_callback));
+  Serial.println("7");
+  //inittial executor and add the timer and subscriber
+  const unsigned int num_handles = 2;
+  RCCHECK(rclc_executor_init(&executor, &support.context, num_handles, &allocator));
+  Serial.println("8");
+  RCCHECK(rclc_executor_add_timer(&executor, &timer));
+  Serial.println("9");
+  // Add subscription to the executor
+  //RCCHECK(rclc_executor_add_subscription(&executor, &sub_motor_command, &motor_command_msg, &motor_command_callback, ON_NEW_DATA));
+  Serial.println("10");
+  RCCHECK(rclc_executor_add_subscription(&executor, &test_sub, &msg, &subscription_callback, ON_NEW_DATA));
+  Serial.println("11");
+
+  // ================================================================
+  // ===                     MOTOR SETUP                       ===
+  // ================================================================
+
+  pinMode(encoderPin1, INPUT);
+  attachInterrupt(digitalPinToInterrupt(encoderPin1), countPulse1, RISING);
+  pinMode(dirPin1, OUTPUT);
+  digitalWrite(dirPin1, HIGH);
+
+  pinMode(encoderPin2, INPUT);
+  attachInterrupt(digitalPinToInterrupt(encoderPin2), countPulse2, RISING);
+  pinMode(dirPin2, OUTPUT);
+  digitalWrite(dirPin2, HIGH);
+
+  ledcAttach(PWMPin1, PWM_FREQ, PWM_RESOLUTION);
+  ledcAttach(PWMPin2, PWM_FREQ, PWM_RESOLUTION);
 }
 
 
@@ -265,4 +379,22 @@ void setup() {
 void loop() {
   delay(DELAY_MS);
   RCSOFTCHECK(rclc_executor_spin_some(&executor, RCL_MS_TO_NS(DELAY_MS)));
+}
+
+void apply_torque(float torque, int pwm_pin, int dir_pin) {
+  float speed = NO_LOAD_SPEED * (torque) / STALL_TORQUE;
+  digitalWrite(dir_pin, (speed > 0) ? LOW : HIGH);
+
+  int pwm = (int)((abs(speed) / NO_LOAD_SPEED * 170.f) + 85.f);
+  ledcWrite(pwm_pin, pwm);
+  delay(5);
+}
+
+
+void countPulse1() {
+  pulseCount1++;
+}
+
+void countPulse2() {
+  pulseCount2++;
 }
