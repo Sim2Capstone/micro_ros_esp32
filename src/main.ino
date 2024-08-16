@@ -31,7 +31,7 @@
 // CONSTANTS
 #define INTERRUPT_PIN 2
 #define INTERNAL_LED_PIN 13
-#define DELAY_MS 100
+#define DELAY_MS 5
 #define TIMER_TIMEOUT_MS 1000
 
 
@@ -41,6 +41,13 @@ const int PWM_FREQ = 50000;
 const int PWM_RESOLUTION = 8;
 const float NO_LOAD_SPEED = 7.50f;
 const float STALL_TORQUE = 1.05f;
+
+
+float prev_yaw = .0f;
+float curr_yaw = .0f;
+unsigned long prev_time = 0;
+unsigned long curr_time = 0;
+float yaw_velocity = .0f;
 
 
 
@@ -127,6 +134,7 @@ void setup() {
   setup_mpu();
   setup_uros();
   setup_motors();
+  prev_time = millis();
 }
 
 
@@ -188,7 +196,6 @@ void setup_mpu() {
 
   // get expected DMP packet size for later comparison
   packetSize = mpu.dmpGetFIFOPacketSize();
-
 }
 
 void setup_motors() {
@@ -207,7 +214,7 @@ void setup_motors() {
 
   ledcWrite(motor1.pwm, 255);
   ledcWrite(motor2.pwm, 255);
-  
+
   delay(1000);
 
   ledcWrite(motor1.pwm, 0);
@@ -268,7 +275,7 @@ void set_torque(float torque, const Motor &motor) {
   float speed = NO_LOAD_SPEED * (torque) / STALL_TORQUE;
   digitalWrite(motor.dir, (speed > 0) ? LOW : HIGH);
 
-  int pwm = (int)((abs(speed) / NO_LOAD_SPEED * 170.f) + 100.f);
+  int pwm = (int)((abs(speed) / NO_LOAD_SPEED * 150.f) + 95.f);
   ledcWrite(motor.pwm, pwm);
   delay(5);
 }
@@ -288,13 +295,28 @@ void timer_cb(rcl_timer_t *timer, int64_t last_call_time) {
   if (!mpu.dmpGetCurrentFIFOPacket(fifoBuffer)) {
     return;
   }
-  mpu.dmpGetQuaternion(&q, fifoBuffer);
+  curr_time = millis();
+
+  // mpu.dmpGetQuaternion(&q, fifoBuffer);
+  update_imu_data();
+  curr_yaw = ypr[0];
+  float dt = (curr_time - prev_time) / 1000.0; // Convert to seconds
+  yaw_velocity = (curr_yaw - prev_yaw) / dt;
+  
+
   imu_msg.orientation.x = q.x;
   imu_msg.orientation.y = q.y;
   imu_msg.orientation.z = q.z;
   imu_msg.orientation.w = q.w;
+  imu_msg.angular_velocity.z = yaw_velocity;
+  Serial.printf("YAWWWW VELOCITY : \t%f%f\t%f", yaw_velocity, dt, curr_yaw);
+
   RCSOFTCHECK(rcl_publish(&imu_pub, &imu_msg, NULL));
+  prev_yaw = curr_yaw;
+  prev_time = curr_time;
+
 }
+
 
 
 
@@ -304,7 +326,7 @@ void motor_cmd_cb(const void *msgin) {
   // // Cast received message to used type
   const sensor_msgs__msg__JointState *msg = (const sensor_msgs__msg__JointState *)msgin;
   Serial.printf("Left motor : %f \t Right Motor: %f\n", msg->effort.data[0], msg->effort.data[1]);
-  float m2 = (msg->effort.data[1]) * -1.0f;
+  float m2 = (msg->effort.data[1]);
 
   set_torque(msg->effort.data[0], motor1);
   set_torque(m2, motor2);
@@ -335,7 +357,7 @@ void error_loop() {
 
 
 void test_imu() {
-  
+
   if (!dmpReady) {
     return;
   }
